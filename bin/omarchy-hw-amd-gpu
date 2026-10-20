@@ -2,4 +2,16 @@
 
 # omarchy:summary=Detect whether an AMD GPU is available.
 
-lsmod | grep -q amdgpu
+# Use cached PCI IDs so setup can detect the GPU before amdgpu is loaded,
+# without probing or resuming suspended devices.
+pci_devices_path="${OMARCHY_PCI_DEVICES_PATH:-/sys/bus/pci/devices}"
+
+shopt -s nullglob
+
+for device in "$pci_devices_path"/*; do
+  [[ -r $device/vendor && -r $device/class ]] || continue
+  [[ $(< "$device/vendor") == "0x1002" ]] || continue
+  [[ $(< "$device/class") == 0x03* ]] && exit 0
+done
+
+exit 1
