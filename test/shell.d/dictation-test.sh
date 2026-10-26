@@ -352,16 +352,50 @@ cat > "$test_tmp/bin/voxtype" <<'SH'
 SH
 chmod +x "$test_tmp/bin/voxtype"
 export XDG_RUNTIME_DIR="$test_tmp/run"
-mkdir -p "$XDG_RUNTIME_DIR"
+mkdir -p "$XDG_RUNTIME_DIR/voxtype"
+printf '%s\n' "$$" > "$XDG_RUNTIME_DIR/voxtype/pid"
 : > "$DICTATION_LOG"
 VOXTYPE_MODE=clipboard omarchy-voxtype-output end
 [[ ! -s $DICTATION_LOG ]] || fail "a cancelled recording must not paste the clipboard"
-VOXTYPE_MODE=type omarchy-voxtype-output begin
-omarchy-voxtype-output end
-[[ ! -s $DICTATION_LOG ]] || fail "type mode must not paste over the typed transcript"
+for mode in type paste; do
+  VOXTYPE_MODE=$mode omarchy-voxtype-output begin
+  omarchy-voxtype-output end
+  [[ ! -s $DICTATION_LOG ]] || fail "$mode mode must not paste over its own output"
+done
 VOXTYPE_MODE=clipboard omarchy-voxtype-output begin
 omarchy-voxtype-output end
 omarchy-voxtype-output end
 expected=$'hyprctl dispatch hl.dsp.send_key_state({ mods = "SHIFT", key = "Insert", state = "down" })\nhyprctl dispatch hl.dsp.send_key_state({ mods = "SHIFT", key = "Insert", state = "up" })'
 [[ $(cat "$DICTATION_LOG") == "$expected" ]] || fail "clipboard mode pastes each transcript once through Hyprland"
 pass "Voxtype output hooks paste clipboard transcripts once and nothing else"
+
+# Voxtype writes its PID before launching hooks through sh -c. Separate
+# subshells model a daemon dying after begin and its replacement cancelling.
+daemon_hook() {
+  printf '%s\n' "$BASHPID" > "$XDG_RUNTIME_DIR/voxtype/pid"
+  VOXTYPE_MODE=clipboard /bin/sh -c 'omarchy-voxtype-output "$1"' sh "$1"
+}
+
+: > "$DICTATION_LOG"
+(daemon_hook begin)
+(daemon_hook end)
+[[ ! -s $DICTATION_LOG ]] || fail "cancellation after a daemon restart must not paste stale text"
+[[ ! -e $XDG_RUNTIME_DIR/omarchy-voxtype-output ]] || fail "a stale output marker must be removed"
+pass "Voxtype cancellation after a daemon restart discards pending output"
+
+(daemon_hook begin; daemon_hook end)
+[[ $(cat "$DICTATION_LOG") == "$expected" ]] || fail "a restarted daemon must still paste its own transcript"
+pass "a restarted Voxtype daemon can paste a new transcript"
+
+: > "$DICTATION_LOG"
+: > "$XDG_RUNTIME_DIR/omarchy-voxtype-output"
+daemon_hook end
+[[ ! -s $DICTATION_LOG ]] || fail "an old unqualified marker must not authorize a paste"
+pass "Voxtype ignores output markers from before the lifetime guard"
+
+VOXTYPE_MODE=clipboard omarchy-voxtype-output begin
+rm -f "$XDG_RUNTIME_DIR/voxtype/pid"
+omarchy-voxtype-output end
+[[ ! -s $DICTATION_LOG ]] || fail "missing daemon identity must not authorize a paste"
+[[ ! -e $XDG_RUNTIME_DIR/omarchy-voxtype-output ]] || fail "unverifiable output must be discarded"
+pass "Voxtype discards pending output when the daemon identity is unavailable"

@@ -12,22 +12,42 @@
 # only after a `begin`. Type and paste modes deliver the text themselves, so
 # `begin` arms nothing there.
 
-marker="${XDG_RUNTIME_DIR:-/tmp}/omarchy-voxtype-output"
+runtime_dir="${XDG_RUNTIME_DIR:-/tmp}"
+marker="$runtime_dir/omarchy-voxtype-output"
+
+daemon_identity() {
+  local pid process_stat
+  local stat_fields=()
+
+  # Voxtype writes this before running hooks, including for manual launches.
+  # Hook shell PIDs change on each call; the daemon's PID and start time do not.
+  [[ -r $runtime_dir/voxtype/pid ]] || return 1
+  pid=$(<"$runtime_dir/voxtype/pid") || return 1
+  [[ $pid =~ ^[1-9][0-9]*$ && -r /proc/$pid/stat ]] || return 1
+  process_stat=$(</proc/"$pid"/stat) || return 1
+  read -r -a stat_fields <<<"${process_stat##*) }"
+  [[ ${stat_fields[0]} != "Z" && ${stat_fields[19]:-} =~ ^[0-9]+$ ]] || return 1
+  printf '%s:%s\n' "$pid" "${stat_fields[19]}"
+}
 
 case "${1:-}" in
   begin)
-    if [[ $(voxtype config get output.mode) == "clipboard" ]]; then
-      : >"$marker"
+    if [[ $(voxtype config get output.mode) == "clipboard" ]] && identity=$(daemon_identity); then
+      printf '%s\n' "$identity" > "$marker"
     else
       rm -f "$marker"
     fi
     ;;
   end)
-    if [[ -e $marker ]]; then
+    if [[ -f $marker ]]; then
+      pending=$(<"$marker")
       rm -f "$marker"
-      # Voxtype's own paste mode gives the clipboard as long to settle.
-      sleep 0.1
-      omarchy-hyprland-send-shortcut SHIFT Insert
+      # A marker left by a dead daemon must not paste on the next cancellation.
+      if identity=$(daemon_identity) && [[ $pending == "$identity" ]]; then
+        # Voxtype's own paste mode gives the clipboard as long to settle.
+        sleep 0.1
+        omarchy-hyprland-send-shortcut SHIFT Insert
+      fi
     fi
     ;;
   *)
